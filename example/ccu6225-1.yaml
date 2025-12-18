@@ -83,13 +83,6 @@ esp32:
   board: esp32dev #nodemcu-32s
   framework:
      type: esp-idf
-
-  #framework:
-  #  type: arduino
-  #variant: esp32  
-  #board: esp32dev  
-  #flash_size: 8MB  
-
 api:
   actions:
     - action: send_sms
@@ -99,7 +92,6 @@ api:
       then:
         - lambda: |-
             putNewSMS(message,recipient);
-
 uart:
   - id: uart_tx
     tx_pin: GPIO21 # -> RXD (9)
@@ -194,27 +186,6 @@ button:
     on_press:
       - lambda: |-
            needTimeSync=true;
-           
-             //static uint8_t i=25;
-             //ESP_LOGE("","CLICK");
-             //addTtime((i%4)+1,(i%24),(i%60));
-             //i+=3;
-             //char buff[100]={0};
-             //setTtimeCreate(buff, 100, dTtime);
-             //needTimeSync=true;
-             //ESP_LOGE("","SET TS");
-#            //std::string testmsg="На злотом крыльце сидели: царь, царевич, король, королевич, сапожник портной. Кто ты будешь такой ?";
-#            //std::string testmsg="На злотом крыльце сидели: царь, царевич, король, королевич, сапожник12";
-#            //std::string testmsg="проверка связи";
-#            //std::string testmsg="werkvnsdlnlsdntyuiopasdfghjkl000zxcvfgfgjjxfgjgjfgjfjfjfxgjxfgjxfgjfxgmnbvcxdfgdhjhgyudjheyeywtggfhjidksjhdfyufidwjherhyfugifkdjwhwyefugifkdjhwwhyeufifjdhwg1234567";
-#            //std::string testmsg="TEST ТЕСТ";
-#            char tmp[]={192,193,194,195,196,197,198,0};
-#            std::string testmsg=tmp;
-#            std::string testrec="+79166817212";
-#            //std::string testrec="+79166817212 ;+712345 ;+712345689;+79163151785 ;+7000000000";
-#            putNewSMS(testmsg,testrec);
-#            ESP_LOGE("","Start OUT SMS");
-
 time:
   - platform: sntp
     id: time_id
@@ -392,3 +363,4 @@ switch:
     optimistic: true
     name: TTIME mode
     id: ttime_
+
