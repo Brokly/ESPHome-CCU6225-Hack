@@ -3,7 +3,7 @@ substitutions:
   upper_devicename: CCU6225 Hack
   devicename: ccu6225-hacker-1
   wifi_ip: !secret ip_ccu6225-hacker-1
-  location: "Мест установки"
+  location: "Место установки"
   hardware: "ESP32"
   ccu6225_gsm_number: !secret CCU6225_master_number
   ccu6225_password: !secret CCU6225_pass
@@ -362,5 +362,6 @@ switch:
     optimistic: true
     name: TTIME mode
     id: ttime_
+
 
 
