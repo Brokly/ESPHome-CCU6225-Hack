@@ -1,0 +1,385 @@
+substitutions:
+  log_baud_rate: '9600'
+  upper_devicename: CCU6225 Hack Home
+  devicename: ccu6225-hacker-2
+  wifi_ip: !secret ip_ccu6225-hacker-2
+  location: "Под потолком в прихожей, в сигналке"
+  hardware: "ESP32 на плате AUX_USB"
+  ccu6225_gsm_number: !secret CCU6225_master_number
+  ccu6225_password: !secret CCU6225_pass
+
+packages:
+  device_base: !include __device_base_mini.yaml
+
+esphome:
+  name: $devicename
+  project:
+    name: "CCU6225.Hacker"
+    version: "ESP32"
+  comment: "CCU6225 SIM300 hacker"
+  includes:
+    - my_components/CCU6225Hack/pdulib.h
+    - my_components/CCU6225Hack/ccu6225hack.h
+  on_boot :
+    then:
+      - lambda: |-
+           // КОНФГУРИРОВАНИЕ
+           // начало конфгурирования установка, подключение сенсоров, отправителя внутренних СМС, пароля, при необходимости лексемы баланса 
+           //ccu6225setupStart("+74952457932" , "/1234"); 
+           ccu6225setupStart("${ccu6225_gsm_number}" , "${ccu6225_password}"); 
+           // реле и выходы - переключатели
+           // бинарные сенсоры
+           addBinarySensor(child_, "ДЕТСКАЯ");
+           addSwitch(siren2_, "СИРЕНА2", 1200);
+           addBinarySensor(signal_, "СИГНАЛ");
+           addSwitch(water_, "ВОДА");
+           addBinarySensor(door_, "ДВЕРЬ");
+           addSwitch(buzzer_, "ЗУММЕР");
+           addBinarySensor(leak_, "ТРУБЫ");
+           addSwitch(siren1_, "СИРЕНА1", 1200);
+           addSwitch(speaker_, "ДИНАМИК", 1200);
+           addBinarySensor(kitch_, "КУХНЯ");
+           addSwitch(blink_, "ЛАМПОЧКА");
+           addBinarySensor(hall_, "КОРИДОР");
+           addBinarySensor(room_, "KOMHATA"); 
+           // логические лексемы
+           addBoolLexema("ПРОТЕЧКА",true);
+           addBoolLexema("СУХО",false);
+           addBoolLexema("ОТКРЫТА",true);
+           addBoolLexema("ЗАКРЫТА",false);
+           addBoolLexema("ДВИЖЕНИЕ",true);
+           addBoolLexema("НОРМА",false); // русские буквы
+           addBoolLexema("HOPMA",false); // англйские буквы
+           // текстовые сенсоры
+           setSecur(secur); // пояснение кто установил на охрану
+           setInCont(inCont); // содержимое входящего смс
+           setOutCont(outCont); // содержимое исходящих смс 
+           setOutAddr(outAddr); // номер получателя 
+           setInAddr(inAddr); // номер отправителя
+           setTstamp(tstamp); // время сигналки
+           setUnkrep(unkrep); // не распознанная команда в пртоколе обмена
+           setGsmError(gsmError); // номер ошибки GSM обмена
+           setTtime(ttimestr); // сенсор строки конфигураии TTIME
+           setInCall(incall); // сенсор входящий звонок от кого
+           setOutCall(outcall); // сенсор исходящий звонок кому 
+           // сенсоры 
+           setgsmRssi(gsmRssi); 
+           setgsmQual(gsmQual);
+           // бинарные сенсоры
+           setOutsmsready(outsmsready_); // сенсор "готов принять смс для отправки"
+           setSenreg(senreg); // статус регистраии в сети
+           // переключатели           
+           setOutsms(outsms_); // разрешение отправки смс наружу
+           setInterch(interch_); // разрешение опроса процессора
+           // источник снхронзации времени
+           setRTC(time_id);
+           // завершение конфигурирования
+           ccu6225setupEnd();
+           id(wdPin).turn_on(); // ДЛЯ АППАРАТНГО ВАЧДОГА
+        
+  on_loop:
+    then:
+      - lambda: |-
+         // ДЛЯ АППАРАТНГО ВАЧДОГА
+         id(wdPin).turn_off();
+         delay(1);
+         id(wdPin).turn_on();
+         ccu6225loop();
+         //static uint32_t timer=millis();
+         //static uint32_t cnt=0;
+         //if(millis()-timer>=10000){
+         //   ESP_LOGE("","Time %d, cnt %d", millis()/1000, cnt++);
+         //   timer=millis();
+         //}
+
+esp32:
+  board: esp32dev #nodemcu-32s
+  framework:
+     type: esp-idf
+
+  #framework:
+  #  type: arduino
+  #variant: esp32  
+  #board: esp32dev  
+  #flash_size: 8MB  
+
+api:
+  actions:
+    - action: send_sms
+      variables:
+        recipient: string
+        message: string
+      then:
+        - lambda: |-
+            putNewSMS(message,recipient);
+
+uart:
+  - id: uart_tx
+    tx_pin: GPIO21 # -> RXD (9) ЖЕЛТЫЙ
+    rx_pin: GPIO5  # <- R98 (10) ЗЕЛЕНЫ
+    baud_rate: 9600
+
+  - id: uart_rx
+    tx_pin: GPIO17 # -> R90 (7) ЧЕРНЫЙ
+    rx_pin: GPIO16 # <-TXD (8) КРАСНЫЙ
+    baud_rate: 9600
+
+output:
+  - id: wdPin
+    platform: gpio
+    pin: 
+      number: GPIO4
+
+text_sensor:
+#кто звонил
+  - platform: template
+    name: Call Inbound
+    id: incall
+#кому звонили
+  - platform: template
+    name: Call Outbound 
+    id: outcall
+#кто поставил на охрану
+  - platform: template
+    name: ARM operator
+    id: secur
+#текст входящего сообщения
+  - platform: template
+    name: SMS Inbound
+    id: inCont
+#текст исходящего сообщения
+  - platform: template
+    name: SMS Outbound
+    id: outCont
+#получатель сообщения
+  - platform: template
+    name: SMS Recipient
+    id: outAddr
+#отправитель сообщения
+  - platform: template
+    name: SMS Sender
+    id: inAddr
+#Дата время GSM
+  - platform: template
+    name: GSM TimeStamp
+    id: tstamp
+#неизвестные данные
+  - platform: template
+    entity_category: diagnostic 
+    name: GSM Unknown
+    id: unkrep
+#кто поставил на охрану
+  - platform: template
+    name: TTIME String
+    id: ttimestr
+
+number:
+  - platform: template
+    name: TTIME day
+    id: ttday
+    mode: box
+    optimistic: true
+    min_value: 1
+    max_value: 5
+    step: 1
+  - platform: template
+    name: TTIME hours
+    id: tthour
+    mode: box
+    optimistic: true
+    min_value: 0
+    max_value: 23
+    step: 1
+  - platform: template
+    name: TTIME minutes
+    id: ttmin
+    mode: box
+    optimistic: true
+    min_value: 0
+    max_value: 59
+    step: 1
+
+button:
+  - platform: template
+    name: Block/Unblock
+    on_press:
+      - lambda: |-
+          blockInterAddr=(ciBlock)((uint8_t)blockInterAddr+1);
+          if((uint8_t)blockInterAddr>3) blockInterAddr = ciNone;
+          ESP_LOGE("","BLOCK: %d",(uint8_t) blockInterAddr);
+  - platform: template
+    name: TTIME remove
+    on_press:
+      - lambda: |-
+          delTtime();
+  - platform: template
+    name: TTIME add
+    on_press:
+      - lambda: |-
+          addTtime(id(ttday).state,id(tthour).state,id(ttmin).state);
+  - platform: template
+    name: "Sync Time"
+    on_press:
+      - lambda: |-
+           needTimeSync=true;
+
+time:
+  - platform: sntp
+    id: time_id
+
+sensor:
+#GSM ERRR
+  - platform: template
+    entity_category: diagnostic 
+    name: GSM ERROR
+    id: gsmError
+    accuracy_decimals: 0
+#RSSI
+  - platform: template
+    entity_category: diagnostic 
+    name: GSM RSSI
+    id: gsmRssi
+    unit_of_measurement: dB
+    accuracy_decimals: 0
+#возможные потери
+  - platform: template
+    entity_category: diagnostic 
+    name: GSM Loss
+    id: gsmQual
+    unit_of_measurement: '%'
+    accuracy_decimals: 1
+# заряд батареи
+  - platform: template
+    name: Battery
+    id: battery_
+    unit_of_measurement: '%'  
+    accuracy_decimals: 0     
+# баланс
+  - platform: template
+    name: Balance
+    id: balans_
+    unit_of_measurement: Руб.  
+    accuracy_decimals: 2     
+
+binary_sensor:
+# диагностика результат поостановки сообщения в очередь
+  - platform: template
+    entity_category: diagnostic 
+    device_class: problem
+    name: Out SMS Ready
+    id: outsmsready_
+    filters: 
+      - invert
+#флаг регистрации в сети GSM
+  - platform: template
+    name: Registered in GSM Net
+    device_class: connectivity
+    entity_category: diagnostic 
+    #trigger_on_initial_state: true
+    id: senreg
+#датчик питания ALARM
+  - platform: template
+    device_class: power
+    name: Power
+    id: power_
+    filters: 
+      - invert
+# сигнал служебный сенсор
+  - platform: template
+    name: Beeper
+    entity_category: diagnostic
+    id: signal_
+#датчик двери ALARM
+  - platform: template
+    name: Door
+    device_class: door
+    id: door_
+#датчик движения Детская
+  - platform: template
+    name: Small Room
+    device_class: motion
+    id: child_
+#датчик движения Комната
+  - platform: template
+    name: Big Room
+    device_class: motion
+    id: room_
+#датчик движения Коридор
+  - platform: template
+    name: Hallway
+    device_class: motion
+    id: hall_
+#датчик движения Кухня
+  - platform: template
+    name: Kitchen
+    device_class: motion
+    id: kitch_
+#датчик протечки
+  - platform: template
+    name: Leak
+    device_class: moisture
+    id: leak_
+
+switch:
+#разрешение сообщений наружу
+  - platform: template
+    entity_category: config
+    restore_mode: RESTORE_DEFAULT_ON
+    optimistic: true
+    name: Allow SMS Outbound
+    id: outsms_
+#разрешение опроса проца
+  - platform: template
+    entity_category: config
+    restore_mode: RESTORE_DEFAULT_ON
+    optimistic: true
+    name: Allow Interchange
+    id: interch_
+#управление режимом охраны
+  - platform: template
+    restore_mode: RESTORE_DEFAULT_OFF
+    optimistic: true
+    name: ARM
+    id: arm_
+#сирена в коридоре
+  - platform: template
+    restore_mode: RESTORE_DEFAULT_OFF
+    optimistic: true
+    name: External Siren
+    id: siren2_
+#сирена в квартире
+  - platform: template
+    restore_mode: RESTORE_DEFAULT_OFF
+    optimistic: true
+    name: Internal Siren
+    id: siren1_
+#пищалка
+  - platform: template
+    restore_mode: RESTORE_DEFAULT_OFF
+    optimistic: true
+    name: Buzzer
+    id: buzzer_
+#водоснабжение
+  - platform: template
+    restore_mode: RESTORE_DEFAULT_OFF
+    optimistic: true
+    name: Water
+    id: water_
+#переключение динамик или микрофон
+  - platform: template
+    restore_mode: RESTORE_DEFAULT_OFF
+    optimistic: true
+    name: Speak/Mic
+    id: speaker_
+#светодиод в коридоре
+  - platform: template
+    restore_mode: RESTORE_DEFAULT_OFF
+    optimistic: true
+    name: External Led
+    id: blink_
+#включение режима автоматических СМС отчетов TTIME
+  - platform: template
+    restore_mode: RESTORE_DEFAULT_OFF
+    optimistic: true
+    name: TTIME mode
+    id: ttime_
