@@ -7,10 +7,11 @@
 //#define MY_DEBUG // для отладки протокола
 
 // возможности CCU6225
-#define MAX_CONTROLS  23 // максималььное количество контролов
-#define MAX_SENSORS    8 // максимальне количество сенсоров
-#define MAX_SWITCHS    7 // максмальное количество переключателей (реле+выходы)
-#define MAX_LOGIC_LEX 20 // максимальное количество лексем
+#define MAX_CONTROLS    23 // максималььное количество контролов
+#define MAX_SENSORS      8 // максимальне количество сенсоров
+#define MAX_SWITCHS      7 // максмальное количество переключателей (реле+выходы)
+#define MAX_LOGIC_LEX   30 // максимальное количество названий состояний реле и датчиков
+#define MAX_CONNECTIONS  8 // максимальное количество адресатов(телефонов) - получателей сообщений
 
 // для сборки составных входящих сообщений
 #define MAX_SMS_BUFF_SIZE MAX_NUMBER_OCTETS // макимально возможный размер СМС сообщения
@@ -19,6 +20,15 @@
 #define REC_MAX_CNT 10    // максимально допустимое количество получателей смс
 #define QUE_QUANTITY 80   // глубина очереди исходящих сообщений
 #define TIME_CLEAR_STOR_SMS 1000*60*60*4// 3 часа время по прошествию которого не до конца принятое кусочное СМС удаляется из буфера
+
+#define IN_BUFF_SIZE 0x1FF // размеры буферов анализа данных
+#define OUT_BUFF_SIZE 0x1FF
+
+// настройка периодов обработки
+constexpr uint32_t interchPeriod      = 120000; // период опроса проца при интерчендже между иклами опроса
+constexpr uint32_t toProcPeriod       =  15000; // минимальный период отпраки PDU процессору, для опроса датчиков
+constexpr uint32_t outSmsPerod        =  40000; // минимальная пауза между исходящими смс
+constexpr uint32_t outSmsErrorTimeout =  30000; // таймаут ошибки отпраки исходяих смс 
 
 #define _EXT {.b=nullptr}, ssUndef, 0, 0
 
@@ -90,10 +100,9 @@ esphome::binary_sensor::BinarySensor* _senreg=nullptr;
 esphome::switch_::Switch* _outsms_=nullptr; //разрешение сообщений наружу
 esphome::switch_::Switch* _interch_=nullptr; //разрешение опроса проца
 bool checkSW=true; // флаг необходимсти проверки изенения состояния свитча
-bool clbcSWactive=true; // флаг разреения работы обратного вызова от свича
+bool clbcSWactive=true; // флаг разрешения работы обратного вызова от свича
+uint8_t inter_buff_size=70; // размер буфера обмена с процессором внутренними сообщениями
 // буфер данных со стороны SIM300
-#define IN_BUFF_SIZE 0x1FF
-#define OUT_BUFF_SIZE 0x1FF
 uint8_t in_buff[IN_BUFF_SIZE+2]; 
 uint16_t in_array=0;
 uint8_t in_comm_hash=0xA5;
@@ -104,7 +113,6 @@ uint16_t out_array=0;
 uint8_t out_comm_hash=0xA5;
 // буфер для сообщений внутреннего обмена
 char* interBuff=nullptr; // буфер обмена 
-uint8_t inter_buff_size=70; // размер буфера обмена с процессором
 uint8_t inter_buff_cnt=0xFF; // ограничитель количества лексем при внутреннем обмене
 // БУФЕРА данных для копирования их при перехвате
 char cpmsFake[]="\"SM\",0,20,\"SM\",0,20,\"SM\",0,20\n";
@@ -121,7 +129,7 @@ char cmgr[]="0,,0\n______";
 char prompt[]="> ";
 char cmgs[]="AT+CMGS=000\r\0\0\0\0\0";  
 bool cmgsOk=false; // флаг ожидания OK в окончании CMGS 
-uint8_t cusd[100]={0x30,0x2C,0x22,0x04,0x11,0x04,0x30,0x04,0x3B,0x04,0x30,0x04,0x3D,0x04,0x41,0x00,0x3A,0x00,0x94,0x00,0x81,0x00,0x20,0x00,0x20,0x00,0x20,0x04,0x40,0x22,0x2C,0x37,0x32};
+uint8_t cusd[100]={0};//{0x30,0x2C,0x22,0x04,0x11,0x04,0x30,0x04,0x3B,0x04,0x30,0x04,0x3D,0x04,0x41,0x00,0x3A,0x00,0x94,0x00,0x81,0x00,0x20,0x00,0x20,0x00,0x20,0x04,0x40,0x22,0x2C,0x37,0x32};
 uint8_t sizecusd=33;
 const char cmgsMask[]=": %02d\0"; // маска формирвания сччетчика смс
 const char _ok[]="\r\n\r\nOK\r\n"; // подтверждающий ответ
@@ -132,7 +140,7 @@ bool noInSMS=true; // флаг отсутствия входящих смс
 bool _hook=false; //флаг включения перехвата обмена данными
 bool _hookReady=false; // флаг разрешения включения перехвата (все операции завершены)
 bool _hookDelayed=false; // флаг отложенного перехвата
-// переменные для обработки отправк сообщения
+// переменные для обработки отправки сообщения
 uint8_t cSMS=0; // счетчик идентификатор мнгосоставных сообщений
 bool outSMSneedSend=false; // флаг необходимости отправки сообщения, поднять для запуска процедуры, после установки сообщения и адреса
 int16_t PDUerr=0; // размер отправляемого PDU
@@ -148,12 +156,17 @@ struct piceSMSbuffer { // структура одной записи куска 
 };
 piceSMSbuffer storPieceSMS[STOR_SMS_COUNT]; //массив указателей на куски составного СМС
 char def[]=" "; // заглушка текстовых массивов 
-char* interAddr=nullptr;// телефон используемый при интерченьдже, от его имени формируются собщения для обменна
 enum ciBlock:uint8_t { ciNone=0, // не блокировать сообщения этому адресу во вне 
                        ciInfo, // пропускать только ALARM, ARM, DISARM, блокировать информационные
                        ciInfoState, // пропускать только ALARM 
+                       ciArmDisarm, // пропускать только ARM/DISARM
                        ciFull}; // блокировать все сообщения этому адресу во вне 
-ciBlock blockInterAddr=ciNone; // флаг блокировки собщении идущих этому адресу во вне  
+// список абонентов и их прав на получение смс
+struct  sAddrPerm{ // структура получатель смс и его права
+   char* addr=nullptr;; // получатель СМС
+   ciBlock perm=ciNone; // права получателя
+};
+sAddrPerm abons[MAX_CONNECTIONS]; // список фильтруемых абонентов с их правами
 // переменные для обработки передачи PDU процу
 char* _inSMSmsg=def; // буфер входящего сообщения (в сторону проца)
 char* _inSMSAddr=def; // буфер адреса отправителя
@@ -170,15 +183,10 @@ uint8_t globalState=0; // буфер глобальных флагов
 #define GL_ARM    0B00000100
 #define GL_DISARM 0B00001000
 bool _arm=false; // статус охраны
-uint8_t startHash=0;  // стартовый хеш
+uint8_t startHash=0;  // стартовый хеш, при расчете хешей
 uint8_t toProcHash=0; // хеш запроса отправленного процу (сумма хешей первых лексем)
 uint8_t fromProcHash=0; // хеш запроса от проца (сумма хешей первых лексем)
 uint8_t testHash=0; // хешь ответа TEST
-// настройка периодов обработки
-constexpr uint32_t interchPeriod      = 120000; // период опроса проца при интерчендже между иклами опроса
-constexpr uint32_t toProcPeriod       =  15000; // минимальный период отпраки PDU процессору, для опроса датчиков
-constexpr uint32_t outSmsPerod        =  40000; // минимальная пауза между исходящими смс
-constexpr uint32_t outSmsErrorTimeout =  30000; // таймаут ошибки отпраки исходяих смс 
 uint8_t hours=0; // показания времени приходящие от проца
 uint8_t mins=0;
 bool needTimeSync=true; //флаг необходимсти снхронизаии времени
@@ -374,26 +382,19 @@ uint16_t getPiceSize(uint8_t* in, uint16_t destSize){
 }
 
 // вносит в очередь исходящее сообщение, при необходимости делит его на части
-bool putNewSMS(std::string msg, std::string rec){
+bool putNewSMS(char* msg_, char* rec_){   
    bool ret=true;
-   if(_outsms_!=nullptr  && _outsms_->state==false){
-      ESP_LOGE(TAG,"Outbound SMS forbidden");
-      if(_outsmsready_!=nullptr) _outsmsready_->publish_state(false);
-      return false;
-   }
-   uint8_t* msg_=(uint8_t*)(msg.c_str());
-   int16_t size_msg=strlen((char*)msg_);
-   uint8_t* rec_=(uint8_t*)(rec.c_str());
-   int16_t size_rec=strlen((char*)rec_);
+   int16_t size_msg=strlen(msg_);
+   int16_t size_rec=strlen(rec_);
    if(size_msg==0 || size_rec<1 || size_msg>1500 || size_rec>100) return false; // ограничим размер смс
-   coreSMS(msg_); // заменяем все не легитимные символы
+   coreSMS((uint8_t*)msg_); // заменяем все не легитимные символы
    for(uint8_t i=1; i<size_msg; i++){
-      if(msg_[i-1]<0xD0) coreSMS(msg_+i);
+      if(msg_[i-1]<0xD0) coreSMS(((uint8_t*)msg_)+i);
    }
-   int16_t needSize = getFullSize(msg_); // считаемм требуемый размер буфера
-   uint8_t* recs[REC_MAX_CNT]={nullptr}; // массивв указателей на номера получателей
+   int16_t needSize = getFullSize((uint8_t*)msg_); // считаемм требуемый размер буфера
+   uint8_t* recs[REC_MAX_CNT]={nullptr}; // массив указателей на номера получателей
    uint8_t k=0; // тут будет количество номеров
-   uint8_t* msgTest=rec_;
+   uint8_t* msgTest=(uint8_t*)rec_;
    while(msgTest[0]!=0){ // строим список номеров
       uint8_t j=0;
       while(msgTest[j]!=0 && msgTest[j]!=';' && msgTest[j]!='|' && msgTest[j]!=' '){j++;}
@@ -415,7 +416,7 @@ bool putNewSMS(std::string msg, std::string rec){
    if (needSize<MAX_SMS_BUFF_SIZE){ // сообщение без разбиения на части
       for(uint8_t i=0; i<k; i++){
          if(recs[i]!=nullptr){
-            if(putNewPieceSMS(msg_, recs[i], size_msg, size_rec, 0)==false){
+            if(putNewPieceSMS((uint8_t*)msg_, recs[i], size_msg, size_rec, 0)==false){
                 ret=false;
                 goto putNewSMSfin;
             }
@@ -426,7 +427,7 @@ bool putNewSMS(std::string msg, std::string rec){
    } else { // сообщение с разбиением на части
       uint8_t piceSize[PICES_SMS_MAX]={0};
       uint8_t pi_cnt=0;
-      msgTest=msg_;
+      msgTest=(uint8_t*)msg_;
       while(pi_cnt<PICES_SMS_MAX){ // количество кусков, тут в сообщении будет заголовок UDH, его размер вычитаем из размера сообщений
           piceSize[pi_cnt]=getPiceSize(msgTest, MAX_SMS_BUFF_SIZE-3);
           if(piceSize[pi_cnt]<=0) break;
@@ -438,7 +439,7 @@ bool putNewSMS(std::string msg, std::string rec){
       }
       for(uint8_t j=0; j<k; j++){
           if(recs[j]!=nullptr){
-             msgTest=msg_;
+             msgTest=(uint8_t*)msg_;
              uint8_t old=que_in;
              for(uint8_t i=1; i<pi_cnt+1; i++){
                 uint8_t size=piceSize[i-1];
@@ -460,6 +461,15 @@ putNewSMSfin:
    }
    if(_outsmsready_!=nullptr) _outsmsready_->publish_state(ret);
    return ret;
+}
+
+bool putNewSMS(std::string msg, std::string rec){
+   if(_outsms_!=nullptr  && _outsms_->state==false){
+      ESP_LOGE(TAG,"Outbound SMS forbidden");
+      if(_outsmsready_!=nullptr) _outsmsready_->publish_state(false);
+      return false;
+   }
+   return putNewSMS(msg.c_str(), rec.c_str());  
 }
 
 // выдает очередное запись из очереди
@@ -880,6 +890,64 @@ void printH(){
    }
 }
 
+// внесение абонента в список с установкой его прав
+uint8_t addAddrPerm(char* addr, ciBlock perm){ // сначала ищем номер в списке
+   uint8_t i=0;
+   for(i; i<MAX_CONNECTIONS; i++){
+      if(abons[i].addr==nullptr) {
+         size_t len=strlen(addr);
+         abons[i].addr=(char*)malloc(len+1);
+         if(abons[i].addr!=nullptr){ // внесли новый
+            strcpy(abons[i].addr,addr);
+         }
+         break;
+      }
+      if(strcmp(abons[i].addr,addr)==0){ // нашли
+         break;         
+      }
+   }
+   if(i<MAX_CONNECTIONS){
+      abons[i].perm=perm;
+      return i;      
+   }
+   return 0xFF; // неудача   
+}
+ 
+// поиск прав абонента в базе
+ciBlock findAddrPerm(char* addr){
+   uint8_t i=0;
+   for(i; i<MAX_CONNECTIONS; i++){
+      if(abons[i].addr==nullptr){
+         return ciNone; // не нашли    
+      } else if(strcmp(abons[i].addr,addr)==0){ // нашли
+         return abons[i].perm;        
+      }
+   }
+   return ciNone; // не нашли   
+}    
+ 
+// получить статус блокировки для сообщения для этого номера
+bool getPerm(char* addr){
+   ciBlock perm=findAddrPerm(addr);
+   if(perm==ciFull) {
+      ESP_LOGE(TAG,"All SMS for %s blocked", addr);
+      return true; // блокируются все исходящие
+   }
+   if((perm==ciArmDisarm) && (((globalState & (GL_ARM | GL_DISARM))==0) || ((globalState & GL_TEST)!=0))){ // пропускаются только ARM/DISARM
+      ESP_LOGE(TAG,"Info+Alarm SMS for %s blocked", addr);
+      return true; 
+   }
+   if((perm==ciInfo) && (!(((globalState & GL_ALARM)!=0) || (((globalState & (GL_ARM | GL_DISARM))!=0) && ((globalState & GL_TEST)==0))))){ // блокируются только информационные (пропускася  ALARM, ARM, DISARM) 
+      ESP_LOGE(TAG,"Info SMS for %s blocked", addr);
+      return true; // блокируются все информационные
+   }
+   if((perm==ciInfoState) && ((globalState & GL_ALARM)==0)){ // пропускаются только ALARM
+      ESP_LOGE(TAG,"Info+Arm SMS for %s blocked", addr);
+      return true; 
+   }
+   return false; // остальные сообщения для этого номера пропускаем
+}
+
 // начало инициализации
 // MainSender - номер телефона от имени которго ведется внутренний обмен данными
 // pas - пароль для обмена данными с CCU6225
@@ -907,8 +975,7 @@ void ccu6225setupStart(const char* MainSender, const char* pas, ciBlock blockMai
    cntr=cntrtmp;
    cntrSize=nData;
    setStr(&pass, pas);
-   setStr(&interAddr, MainSender);
-   blockInterAddr=blockMainSender;
+   addAddrPerm((char*)MainSender, blockMainSender); // первый номер в списке разрешений - основной
    if(cntr[nArm].control.w!=nullptr) setSwClbc(cntr[nArm].control.w); // обратный вызов от свичей
    if(cntr[nTtime].control.w!=nullptr) setSwClbc(cntr[nTtime].control.w); // обратный вызов от свичей
    static char l0[]="ON";
@@ -931,6 +998,10 @@ void ccu6225setupStart(const char* MainSender, const char* pas, ciBlock blockMai
 
 void ccu6225setupEnd(){ 
    // баланс  пароль
+   if(abons[0].addr==nullptr){
+       abons[0].addr=def;
+       ESP_LOGE(TAG,"Fatal ERROR, Main Sender not set");
+   }
    if(pass==nullptr) {
        pass=def;
        ESP_LOGE(TAG,"Fatal ERROR, Password not set");
@@ -938,10 +1009,6 @@ void ccu6225setupEnd(){
    if(cntr[nBalans].lex==nullptr) {
        cntr[nBalans].lex=def;
        ESP_LOGE(TAG,"Fatal ERROR, BALANCE not set");
-   }
-   if(interAddr==nullptr) {
-       interAddr=def;
-       ESP_LOGE(TAG,"Fatal ERROR, Main Sender not set");
    }
    // вычсление хешей для поиска
    if(hashSetup()==false){
@@ -961,6 +1028,20 @@ bool isDigit(char b){
 
 uint8_t dig(char b){
    return b-'0';
+}
+ 
+// корректировка для вывода в лог, убираем \r \n
+char* coreForLog(char* in){
+   static char showBuff[generalWorkBuffLength+1];
+   for(uint16_t i=0; i<generalWorkBuffLength; i++){ // подготовка строки для публикации в сенсор
+      if(in[i]=='\r' || in[i]=='\n'){ // замена служебных символов для вывода в текcтовые сенсоры
+         showBuff[i]=' ';
+      } else {
+         showBuff[i]=in[i];
+         if(in[i]==0) break;
+      }
+   }                 
+   return showBuff;
 }
 
 // попытка считать цифру float
@@ -1586,12 +1667,12 @@ bool msgParce(char* str, uint16_t size){
      errMsgParce:
           if(frst<cntrSize){
              if(cntr[frst].type==cSwitch){
-                ESP_LOGE(TAG,"State for switch %s UNDEFINED: %s",(char*)cntr[frst].lex, &(str[arrow+1]));
+                ESP_LOGE(TAG,"State for switch %s UNDEFINED: %s",(char*)cntr[frst].lex, coreForLog(&(str[arrow+1])));
              } else {
-                ESP_LOGE(TAG,"State for sensor %s failed parce: %s",(char*)cntr[frst].lex, &(str[arrow+1]));
+                ESP_LOGE(TAG,"State for sensor %s failed parce: %s",(char*)cntr[frst].lex, coreForLog(&(str[arrow+1])));
              }
           } else {
-             ESP_LOGE(TAG,"Failed parce %s/%s %s, state=%d, alarm=%d, content: %s", (frst<cntrSize) ? (char*)cntr[frst].lex : "???", (secn<scndSize) ? (char*)scnd[secn].lex : "???", ch, (uint8_t)state , (uint8_t)alarm, &(str[arrow]));
+             ESP_LOGE(TAG,"Failed parce %s/%s %s, state=%d, alarm=%d, content: %s", (frst<cntrSize) ? (char*)cntr[frst].lex : "???", (secn<scndSize) ? (char*)scnd[secn].lex : "???", ch, (uint8_t)state , (uint8_t)alarm, coreForLog(&(str[arrow])));
              return false;
           }
        }
@@ -1781,9 +1862,8 @@ void waMod(uint8_t* bu, uint8_t count){
     // РАЗБОР PDU
     bool decode(char* buffpdu, uint16_t sz){
               // РАСШИФРОВКА СМС
-
               //ESP_LOGE("","PDU SIZE: %d",sz);
-              //ESP_LOGE("","%s",printHexs((uint8_t*)buffpdu,sz));
+              //ESP_LOGE("","%s",printHexs((uint8_t*)bcoreForLoguffpdu,sz));
               
               if(decodePDU((const char*)buffpdu)) {
                  if((tpdu & PDU_SMS_SUBMIT)!=0){
@@ -1795,11 +1875,11 @@ void waMod(uint8_t* bu, uint8_t count){
                     }
                     ESP_LOGD(TAG,"Gloal states flags: %x", globalState);
                  }                     
-                 for(uint16_t i=0; i<generalWorkBuffLength && generalWorkBuff[i]!=0; i++){ // подготовка строки для публикации в сенсор
-                    if(generalWorkBuff[i]=='\r' || generalWorkBuff[i]=='\n'){ // замена служебных символов для вывода в текcтовые сенсоры
-                       generalWorkBuff[i]='|';
-                    }
-                 }                 
+                 //for(uint16_t i=0; i<generalWorkBuffLength && generalWorkBuff[i]!=0; i++){ // подготовка строки для публикации в сенсор
+                 //   if(generalWorkBuff[i]=='\r' || generalWorkBuff[i]=='\n'){ // замена служебных символов для вывода в текcтовые сенсоры
+                 //      generalWorkBuff[i]='|';
+                 //   }
+                 //}                 
                  if (overFlow) {
                     ESP_LOGE(TAG,"PDU Buffer Overflow, partial");
                  }
@@ -1836,25 +1916,7 @@ void waMod(uint8_t* bu, uint8_t count){
        inSMStryCnt=0;
        inSMSTimer=millis();
     }
-    
-    // получить статус блокировки для сообщения для этого номера
-    bool blockPerm(char* interAddr, ciBlock perm){
-        if(strcmp(addressBuff,interAddr)!=0) return false; // этот номер не блокируется
-        if(perm==ciFull) {
-           ESP_LOGE(TAG,"All SMS for %s blocked", interAddr);
-           return true; // блокируются все исходящие
-        }
-        if((perm==ciInfo) && (!(((globalState & GL_ALARM)!=0) || (((globalState & (GL_ARM | GL_DISARM))!=0) && ((globalState & GL_TEST)==0))))){ // блокируются только информационные (пропускася  ALARM, ARM, DISARM) 
-           ESP_LOGE(TAG,"Info SMS for %s blocked", interAddr);
-           return true; // блокируются все информационные
-        }
-        if((perm==ciInfoState) && ((globalState & GL_ALARM)==0)){ // пропускаются только ALARM
-           ESP_LOGE(TAG,"Info+Arm SMS for %s blocked", interAddr);
-           return true; 
-        }
-        return false; // остальные сообщения для этого номера прпускаем
-    }
-    
+
     void ccu6225loop(){     
            
            // работа с линией RX - поток данных от SIM300
@@ -1870,7 +1932,7 @@ void waMod(uint8_t* bu, uint8_t count){
                     if(inPDU){ // ожидание входящего PDU
                        inPDU=false;
                        if(decode((char*)in_buff, in_array)){ 
-                          ESP_LOGD(TAG,"Inbound SMS from %s : %s", addressBuff, generalWorkBuff);
+                          ESP_LOGD(TAG,"Inbound SMS from %s : %s", addressBuff, coreForLog(generalWorkBuff));
                           if (concatInfo[0] == 0){ // сообщение одним куском
                              if(_inCont!=nullptr && _inAddr!=nullptr){
                                 if(strcmp(_inCont->state.c_str(),generalWorkBuff)!=0){
@@ -1921,17 +1983,6 @@ void waMod(uint8_t* bu, uint8_t count){
                           outSMScounter=temp;
                           ESP_LOGV(TAG,"CMGS: %s",(char*)&(in_buff[7]));
                           cmgsOk=true; //помечаем, для правильной обработки команды ОК
-                          
-                          //if(_hookDelayed){ // продолжим ждать ответ на на запрос внутреннего обмена
-                          //   _hookDelayed=false;
-                          //   if(toProcHash!=0){ // только если знаем хеш ожидаемого соообщения
-                          //      ESP_LOGE(TAG, "Hook Delayed actve, next waite reply hash: %x", toProcHash);
-                          //      inSMSTimer = millis(); // откладываем следующую попыку отправки
-                          //      interchangeTimer = millis();
-                          //      _hook=true;  // включаем перехват
-                          //   }
-                          //}
-                          
                        } else if(in_comm_hash==0x95){ //+CMGR ВХОДЯЩЕЕ СМС
                           inPDU=true;
                           ESP_LOGV(TAG,"CMGR: %s",(char*)&(in_buff[7])); 
@@ -1957,15 +2008,26 @@ void waMod(uint8_t* bu, uint8_t count){
                        } else if(in_comm_hash==0xF5){ //+CSQ 22,22КАЧЕСТВО СВЯЗИ
                           // КАЧЕСТВО СВЯЗИ
                           copyrep(csq,(char*)&(in_buff[6]),sizeof(csq));
-                          ESP_LOGV(TAG,"CSQ%s",csq); 
+                          ESP_LOGV(TAG,"CSQ %s",csq); 
                           int8_t rssi=getdec16((char*)&in_buff[6]);
                           int8_t qual=getdec16((char*)&in_buff[6+2+(rssi>9 ? 1:0)]);
-                          if(rssi>31) rssi=-1;
-                          if(qual>7) qual=7;
-                          rssi=-113+(rssi*2);
-                          if(_gsmRssi!=nullptr && _gsmRssi->state!=rssi) _gsmRssi->publish_state(rssi);
-                          float ret=0.2*pow(2,qual);
-                          if(_gsmQual!=nullptr && _gsmQual->state!=ret) _gsmQual->publish_state(ret);
+                          bool rssiOk=true;
+                          if(_gsmRssi!=nullptr && rssi<=32 ){
+                             if(rssi==0){
+                                rssi=-115;
+                             } else if(rssi==1){
+                                rssi=-111;
+                             } else if(rssi<31){
+                                rssi=-110+(rssi-2)*2;
+                             } else if(rssi==31){
+                                rssi=-52;
+                             }
+                             if( _gsmRssi->state!=rssi) _gsmRssi->publish_state(rssi);
+                          }
+                          if(_gsmQual!=nullptr && qual<=7){
+                             float ret=(0.2*pow(2,qual))/0.75;
+                             if(_gsmQual->state!=ret) _gsmQual->publish_state(ret);
+                          }
                        } else if(in_comm_hash==0x81){ //+CLCC, входящий, исходящий звонки
                           //ИСХОДЯЩЙ звонок
                           //+CLCC: 1,0,2,0,0,"+7916XXXXXXX",145,"" / 2 - Исходящий вызов в режиме набора.
@@ -2045,7 +2107,7 @@ void waMod(uint8_t* bu, uint8_t count){
                     if(outSMSneedSend && data==' ' && in_array==1 && in_buff[0]=='>'){ // промпт от модуля SIM300 в режиме отправки SMS наружу
                        if(_hook){
                           UART_TX_HOCK_WA((uint8_t*)generalWorkBuff, (PDUerr+1)*2+1); // отправляем ранее подготовленное PDU 
-                          ESP_LOGD(TAG,"Outbound inject SMS: %s",(char*)generalWorkBuff);
+                          ESP_LOGD(TAG,"Outbound inject SMS: %s",coreForLog(generalWorkBuff));
                        }
                     }                       
                  }
@@ -2077,8 +2139,8 @@ void waMod(uint8_t* bu, uint8_t count){
                   if(_hook==false){ // нет перехвата
                      if(data==0x1a && out_buff[1]!='T'){ // получили PDU от проца без режима перехвата
                         if(decode((char*)out_buff, out_array)){
-                           ESP_LOGE(TAG,"Outbund SMS to %s : %s", addressBuff, generalWorkBuff);
-                           if(blockPerm(interAddr, blockInterAddr)){ //если это сообение для этого номера блокированно
+                           ESP_LOGE(TAG,"Outbund SMS to %s : %s", addressBuff, coreForLog(generalWorkBuff));
+                           if(getPerm(addressBuff)){ //если это сообение для этого номера блокированно
                               ESP_LOGE(TAG,"SMS for blocked address and content. Sending aborted.");
                               data=0x1B; // передаем ESC модулю - OТМЕНЯЕМ передачу
                               UART_RX_HOCK_WB(0x1A); // процу говорим, что приняли окончание передачи
@@ -2186,47 +2248,48 @@ void waMod(uint8_t* bu, uint8_t count){
                         if(!decode((char*)out_buff, out_array)){
                             ESP_LOGE(TAG,"PDU from Proc DECODE ERROR");
                         } else {
-                            ESP_LOGE(TAG,"Interchange reply: %s", generalWorkBuff);
+                            ESP_LOGE(TAG,"Interchange reply: %s", coreForLog(generalWorkBuff));
                         }
                         
                         //ESP_LOGE("","toProcHash=%x, fromProcHash=%x", toProcHash, fromProcHash);// для отладки
                         //toProcHash=fromProcHash; // для отладки
 
                         // если совпал хеш или нет связи или сообщение для данного получателя заблокировано
-                        if(toProcHash==fromProcHash || connectOk==false || blockPerm(interAddr, blockInterAddr)){
-                            if(toProcHash==fromProcHash){ // сообщщение обработано
+                        bool permit=getPerm(addressBuff);
+                        if(toProcHash==fromProcHash || connectOk==false || permit){
+                            if(toProcHash==fromProcHash){ // ожидаемоое сообщщение обработано
                                ESP_LOGE(TAG, "Interchange SMS proc finale, hash: expected 0x%02X, received 0x%02X", toProcHash, fromProcHash); 
                                toProcHash=0;// признак не сформированного сообщения, можно формировать новое
                                inSMSBreak(); // конец сеанса обработки смс
-                            } else { // из-за отсутствия связи делаем вид, что сообщение ушло, публикуем его в вебе
-                               if(_outAddr!=nullptr && _outCont!=nullptr){
+                               _hook=false; // отключаем перехват
+                            } else if (permit){ // запрещенное сообщение
+                               ESP_LOGE(TAG, "SMS blocked, hash: expected 0x%02X, received 0x%02X", toProcHash, fromProcHash);
+                            } else { // из-за отсутствия связи делаем вид, что сообщение ушло, публикуем его в вебе, но продолжаем ждать нашего сообщения
+                               if(_outAddr!=nullptr && _outCont!=nullptr){ // для возможности передать другими каналами связи
                                   if(strcmp(_outCont->state.c_str(),generalWorkBuff)!=0){ 
                                      _outAddr->publish_state(addressBuff);
                                      _outCont->publish_state(generalWorkBuff);
                                   }
                                }
+                               if((globalState & GL_ALARM) != 0) { // сообщения с признаком ALARM поставить в очередь на отправку
+                                  ESP_LOGE(TAG, "SMS ALARM state put in outbound queue"); 
+                                  putNewSMS(generalWorkBuff, addressBuff);
+                               }
                                // TODO помещать ALARM сообщения в очередь нашей отправки
-                               ESP_LOGE(TAG, "Interchange SMS proc paused, other SMS destry, que:%x == reply:%x", toProcHash, fromProcHash); 
+                               ESP_LOGE(TAG, "Interchange SMS waite next, hash: expected 0x%02X, received 0x%02X", toProcHash, fromProcHash); 
                             }
                             outSMScounter=(outSMScounter+3)%98+1;
                             sprintf(&(cmgs[7]),cmgsMask,outSMScounter);
                             UART_RX_HOCK_WA((uint8_t*)&cmgs[2],9); // +CMGS: XX
                             UART_RX_HOCK_WA((uint8_t*)_ok,8); //"\r\n\r\nOK\r\n"
                         } else { // сообщение не ответ на наш  запрос
-                            //ESP_LOGE(TAG,"Uncontroled outbound(1) SMS to %s : %s", addressBuff, generalWorkBuff);
-                            if(_outAddr!=nullptr && _outCont!=nullptr){
-                               if(strcmp(_outCont->state.c_str(),generalWorkBuff)!=0){ //
-                                  _outCont->publish_state(generalWorkBuff);
-                                  _outAddr->publish_state(addressBuff);
-                               }
-                            }
                             const char err[]="+CMS ERROR: 515\r\n"; // выставим ошибку отправки, что бы проц повторил отправку модулю
                             UART_RX_HOCK_WA((uint8_t*)err,sizeof(err)-1);
-                            ESP_LOGE(TAG, "Interchange SMS proc paused, hashs mismatch, que:%x ~ reply:%x", toProcHash, fromProcHash);
+                            ESP_LOGE(TAG, "Interchange SMS paused, hash: expected 0x%02X, received 0x%02X", toProcHash, fromProcHash);
                             _hookDelayed=true; // будем ожидать ответа на наш запрос, но позже
+                            _hook=false; // отключаем перехват
                         }
                         inSMSTimer=millis(); // откладываем следующую попыку отправки
-                        _hook=false; // отключаем перехват
                      }
                   } 
                   //out_buff[out_array-1]=0; // удаляем "\r"
@@ -2290,10 +2353,8 @@ void waMod(uint8_t* bu, uint8_t count){
               }
            } else { // проверяем очередь
               if(que_cnt>0 && inSMSneedSend==false && _hook==false) {
-                  if(_outsms_==nullptr || _outsms_->state){
-                     outSMSneedSend=true; // если там что то есть поднять флаг отправки
-                     ESP_LOGE(TAG,"Activate send proc SMS");  
-                  } 
+                  outSMSneedSend=true; // если там что то есть поднять флаг отправки
+                  ESP_LOGE(TAG,"Activate send proc SMS");  
               }
            }
            
@@ -2329,7 +2390,7 @@ void waMod(uint8_t* bu, uint8_t count){
                    ESP_LOGE(TAG,"Create switch comm: %s, Size: %d, Hash: %x", interBuff, arrow, toProcHash);
                 inSMSproc:
                    _inSMSmsg=interBuff;
-                   _inSMSAddr=interAddr;
+                   _inSMSAddr=abons[0].addr;
                    inSMSneedSend=(_interch_==nullptr || _interch_->state); // флаг СМС для запуска обмена данными с процом, только если разрешено
                } else {
                    uint32_t ml=millis();
