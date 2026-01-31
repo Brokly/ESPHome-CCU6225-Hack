@@ -930,7 +930,7 @@ ciBlock findAddrPerm(char* addr){
 bool getPerm(char* addr){
    ciBlock perm=findAddrPerm(addr);
    if(perm==ciFull) {
-      ESP_LOGE(TAG,"All SMS for %s blocked", addr);
+      ESP_LOGD(TAG,"All SMS for %s blocked", addr);
       return true; // блокируются все исходящие
    }
    if((perm==ciArmDisarm) && (((globalState & (GL_ARM | GL_DISARM))==0) || ((globalState & GL_TEST)!=0))){ // пропускаются только ARM/DISARM
@@ -1667,9 +1667,9 @@ bool msgParce(char* str, uint16_t size){
      errMsgParce:
           if(frst<cntrSize){
              if(cntr[frst].type==cSwitch){
-                ESP_LOGE(TAG,"State for switch %s UNDEFINED: %s",(char*)cntr[frst].lex, coreForLog(&(str[arrow+1])));
+                ESP_LOGE(TAG,"State for switch %s UNDEFINED: %s",(char*)cntr[frst].lex, coreForLog(&(str[arrow])));
              } else {
-                ESP_LOGE(TAG,"State for sensor %s failed parce: %s",(char*)cntr[frst].lex, coreForLog(&(str[arrow+1])));
+                ESP_LOGE(TAG,"State for sensor %s failed parce: %s",(char*)cntr[frst].lex, coreForLog(&(str[arrow])));
              }
           } else {
              ESP_LOGE(TAG,"Failed parce %s/%s %s, state=%d, alarm=%d, content: %s", (frst<cntrSize) ? (char*)cntr[frst].lex : "???", (secn<scndSize) ? (char*)scnd[secn].lex : "???", ch, (uint8_t)state , (uint8_t)alarm, coreForLog(&(str[arrow])));
@@ -2188,7 +2188,7 @@ void waMod(uint8_t* bu, uint8_t count){
                           uint8_t i=getdec16((char*)&(out_buff[8])); // номер опрашиваемой ячейки сообщений
                           if(i==1){ // проц запросил содержимое первого PDU (ЭМУЛИРУЕМ ВХОДЯЯЩЕЕ PDU)
                              PDUsize=encodePDU(_inSMSAddr, _inSMSmsg, _inSMSHub, 0, (char*)&(cclk[1]));
-                             //ESP_LOGD(TAG,"Inter PDU: %s, from %s", _inSMSmsg, _inSMSAddr);
+                             ESP_LOGV(TAG,"Crete inter PDU: %s, from %s", _inSMSmsg, _inSMSAddr);
                              uint8_t line;
                              if(PDUsize<0){ // в случае ошибки сообщаем, что PDU нулевого размера
                                 inSMSBreak();
@@ -2263,7 +2263,7 @@ void waMod(uint8_t* bu, uint8_t count){
                                inSMSBreak(); // конец сеанса обработки смс
                                _hook=false; // отключаем перехват
                             } else if (permit){ // запрещенное сообщение
-                               ESP_LOGE(TAG, "SMS blocked, hash: expected 0x%02X, received 0x%02X", toProcHash, fromProcHash);
+                               ESP_LOGE(TAG, "SMS blocked content and number, hash: expected 0x%02X, received 0x%02X", toProcHash, fromProcHash);
                             } else { // из-за отсутствия связи делаем вид, что сообщение ушло, публикуем его в вебе, но продолжаем ждать нашего сообщения
                                if(_outAddr!=nullptr && _outCont!=nullptr){ // для возможности передать другими каналами связи
                                   if(strcmp(_outCont->state.c_str(),generalWorkBuff)!=0){ 
@@ -2275,7 +2275,6 @@ void waMod(uint8_t* bu, uint8_t count){
                                   ESP_LOGE(TAG, "SMS ALARM state put in outbound queue"); 
                                   putNewSMS(generalWorkBuff, addressBuff);
                                }
-                               // TODO помещать ALARM сообщения в очередь нашей отправки
                                ESP_LOGE(TAG, "Interchange SMS waite next, hash: expected 0x%02X, received 0x%02X", toProcHash, fromProcHash); 
                             }
                             outSMScounter=(outSMScounter+3)%98+1;
@@ -2440,7 +2439,7 @@ void waMod(uint8_t* bu, uint8_t count){
                } else {
                   _hook=true; // переключаем обмен на себя
                   setCpms('1'); //указываем, что есть смс для передачи процу
-                  ESP_LOGV(TAG,"Start proc PDU interchange");
+                  ESP_LOGD(TAG,"Start proc PDU interchange");
                }
                inSMSTimer = millis();
            } 
