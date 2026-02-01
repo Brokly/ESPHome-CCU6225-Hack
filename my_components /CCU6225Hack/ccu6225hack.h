@@ -25,8 +25,8 @@
 #define OUT_BUFF_SIZE 0x1FF
 
 // настройка периодов обработки
-constexpr uint32_t interchPeriod      = 120000; // период опроса проца при интерчендже между иклами опроса
-constexpr uint32_t toProcPeriod       =  15000; // минимальный период отпраки PDU процессору, для опроса датчиков
+constexpr uint32_t interchPeriod      =  30000; // период опроса проца при интерчендже между циклами опроса
+constexpr uint32_t toProcPeriod       =   5000; // минимальный период отпраки PDU процессору, для опроса датчиков
 constexpr uint32_t outSmsPerod        =  40000; // минимальная пауза между исходящими смс
 constexpr uint32_t outSmsErrorTimeout =  30000; // таймаут ошибки отпраки исходяих смс 
 
@@ -80,9 +80,9 @@ esphome::time::RealTimeClock* _rtc=nullptr;
 // текстовые сенсоры
 esphome::text_sensor::TextSensor* _secur=nullptr;   // сенсор кто оперировал постановкой-снятем с охраны 
 esphome::text_sensor::TextSensor* _inCont=nullptr;  // текст входящего сообщения
+esphome::text_sensor::TextSensor* _inAddr=nullptr;  // отправитель сообщения
 esphome::text_sensor::TextSensor* _outCont=nullptr; // текст исходящего сообщения
 esphome::text_sensor::TextSensor* _outAddr=nullptr; // получатель сообщения
-esphome::text_sensor::TextSensor* _inAddr=nullptr;  // отправитель сообщения
 esphome::text_sensor::TextSensor* _tstamp=nullptr;  // Дата время контролера GSM
 esphome::text_sensor::TextSensor* _unkrep=nullptr;  // неизвестные данные протокола
 esphome::text_sensor::TextSensor* _timestamp=nullptr;  // Время процессора
@@ -159,7 +159,7 @@ char def[]=" "; // заглушка текстовых массивов
 enum ciBlock:uint8_t { ciNone=0, // не блокировать сообщения этому адресу во вне 
                        ciInfo, // пропускать только ALARM, ARM, DISARM, блокировать информационные
                        ciInfoState, // пропускать только ALARM 
-                       ciArmDisarm, // пропускать только ARM/DISARM
+                       ciInfoAlarm, // пропускать только ARM/DISARM
                        ciFull}; // блокировать все сообщения этому адресу во вне 
 // список абонентов и их прав на получение смс
 struct  sAddrPerm{ // структура получатель смс и его права
@@ -804,6 +804,10 @@ void setSwClbc(esphome::switch_::Switch* sw){
              if(cntr[i].type==cSwitch && cntr[i].control.w==sw){ // найти инициатора колбэка
                 checkSW=true; // поднять флаг необходимости обработки свитчей
                 cntr[i].workstate=ssNeedSet; // поднять флаг необходимости установки
+                if((i==nArm || i==nDisarm) && _secur!=nullptr){
+                   char ha[]="HomeAssistant";
+                   _secur->publish_state(ha);
+                }
                 //ESP_LOGE("","%s",cntr[i].lex);
                 return;
              }
@@ -891,7 +895,7 @@ void printH(){
 }
 
 // внесение абонента в список с установкой его прав
-uint8_t addAddrPerm(char* addr, ciBlock perm){ // сначала ищем номер в списке
+uint8_t addAddrPerm(const char* addr, ciBlock perm){ // сначала ищем номер в списке
    uint8_t i=0;
    for(i; i<MAX_CONNECTIONS; i++){
       if(abons[i].addr==nullptr) {
@@ -933,7 +937,7 @@ bool getPerm(char* addr){
       ESP_LOGD(TAG,"All SMS for %s blocked", addr);
       return true; // блокируются все исходящие
    }
-   if((perm==ciArmDisarm) && (((globalState & (GL_ARM | GL_DISARM))==0) || ((globalState & GL_TEST)!=0))){ // пропускаются только ARM/DISARM
+   if((perm==ciInfoAlarm) && (((globalState & (GL_ARM | GL_DISARM))==0) || ((globalState & GL_TEST)!=0))){ // пропускаются только ARM/DISARM
       ESP_LOGE(TAG,"Info+Alarm SMS for %s blocked", addr);
       return true; 
    }
@@ -1334,27 +1338,23 @@ bool setGlobSens(uint8_t frst, char* ch){
        if(cntr[nArm].control.w!=nullptr && cntr[nArm].type==cSwitch){ // если есть свитч 
           if(cntr[nArm].workstate==ssUndef || cntr[nArm].workstate==ssFree){ // отображаемый переключатель не инициализирован и нет команды процесса установки
              if(cntr[nArm].control.w->state!=_arm) {
-                 clbcSWactive=false; // отключаем обратный вызов, что бы не сформировалась команда установки
-                 cntr[nArm].control.w->publish_state(_arm); // установить состояне о котором сказал проц
-                 clbcSWactive=true; // вернуть хук на измменение состояние переключателя
                  if(_secur!=nullptr){
-                   if(ch!=0){ // кто поставил на охрану
+                   if(ch!=0){ // кто изменил режим охраны
                       _secur->publish_state(ch);
                    } else {
                       char ch[]="Unknown";
                       _secur->publish_state((char*)ch);
                    }
                  }
+                 clbcSWactive=false; // отключаем обратный вызов, что бы не сформировалась команда установки
+                 cntr[nArm].control.w->publish_state(_arm); // установить состояне о котором сказал проц
+                 clbcSWactive=true; // вернуть разрешение обратног вызова на измменение состояние переключателя
              }    
              cntr[nArm].workstate=ssFree;
           } else { // установка состояния в процессе обработки
              if(cntr[nArm].workstate==ssWaiteSet){ // это ответ на команду
-                if(cntr[nArm].control.w->state==_arm){ // цель достикли переключатель в правильном состооянии
+                if(cntr[nArm].control.w->state==_arm){ // цель достигли переключатель в правильном состооянии
                     cntr[nArm].workstate=ssFree; // просто разрешаем изменения в дальнешем   
-                    if(_secur!=nullptr){ // тут оператор - HA
-                      char ha[]="From HA";
-                      _secur->publish_state(ha);
-                    }
                 } else { // ответ не правильный 
                     cntr[nArm].workstate=ssNeedSet; // отправим команду еще раз
                     checkSW=true; // поднимаем флаг необходимости проверки и отправки сообщений
@@ -1917,6 +1917,24 @@ void waMod(uint8_t* bu, uint8_t count){
        inSMSTimer=millis();
     }
 
+void pubOutSMS(char* addr, char* cont){
+   if(_outCont!=nullptr && strcmp(_outCont->state.c_str(),cont)!=0){ // если есть сенсоры отправляемых сообщений
+      _outCont->publish_state(cont);
+   }
+   if(_outAddr!=nullptr && strcmp(_outAddr->state.c_str(),addr)!=0){ // если есть сенсор адресата
+      _outAddr->publish_state(addr);
+   }
+}
+
+void pubInSMS(char* addr, char* cont){
+   if(_inCont!=nullptr && strcmp(_inCont->state.c_str(),cont)!=0){
+      _inCont->publish_state(cont);
+   }                             
+   if(_inAddr!=nullptr && strcmp(_inAddr->state.c_str(),addr)!=0){
+      _inAddr->publish_state(addr);
+   }
+}
+
     void ccu6225loop(){     
            
            // работа с линией RX - поток данных от SIM300
@@ -1934,21 +1952,11 @@ void waMod(uint8_t* bu, uint8_t count){
                        if(decode((char*)in_buff, in_array)){ 
                           ESP_LOGD(TAG,"Inbound SMS from %s : %s", addressBuff, coreForLog(generalWorkBuff));
                           if (concatInfo[0] == 0){ // сообщение одним куском
-                             if(_inCont!=nullptr && _inAddr!=nullptr){
-                                if(strcmp(_inCont->state.c_str(),generalWorkBuff)!=0){
-                                    _inAddr->publish_state(addressBuff);
-                                    _inCont->publish_state(generalWorkBuff);
-                                }
-                             }
+                             pubInSMS(addressBuff, generalWorkBuff);
                           } else { // кусочные сообщения
                              char* fmsg=storePiece(generalWorkBuff, addressBuff, concatInfo[1], concatInfo[2],concatInfo[0]);
                              if(fmsg!=nullptr){ // накопили кусками полное сообщение 
-                                if(_inCont!=nullptr && _inAddr!=nullptr){
-                                   if(strcmp(_inCont->state.c_str(),generalWorkBuff)!=0){
-                                       _inAddr->publish_state(addressBuff);
-                                       _inCont->publish_state(fmsg);
-                                   }
-                                }
+                                pubInSMS(addressBuff, fmsg);
                                 free(fmsg);
                              }
                              interchangeTimer=millis(); // продлеваем задержку интерченджа, в ожидании следующего входяего куска
@@ -2028,7 +2036,7 @@ void waMod(uint8_t* bu, uint8_t count){
                              float ret=(0.2*pow(2,qual))/0.75;
                              if(_gsmQual->state!=ret) _gsmQual->publish_state(ret);
                           }
-                       } else if(in_comm_hash==0x81){ //+CLCC, входящий, исходящий звонки
+                       } else if(in_comm_hash==0x81 && in_buff[2]=='L'){ //+CLCC, входящий, исходящий звонки
                           //ИСХОДЯЩЙ звонок
                           //+CLCC: 1,0,2,0,0,"+7916XXXXXXX",145,"" / 2 - Исходящий вызов в режиме набора.
                           //+CLCC: 1,0,3,0,0,"+7916XXXXXXX",145,"" / 3 - Исходящий вызов в режиме дозвона.
@@ -2140,7 +2148,7 @@ void waMod(uint8_t* bu, uint8_t count){
                      if(data==0x1a && out_buff[1]!='T'){ // получили PDU от проца без режима перехвата
                         if(decode((char*)out_buff, out_array)){
                            ESP_LOGE(TAG,"Outbund SMS to %s : %s", addressBuff, coreForLog(generalWorkBuff));
-                           if(getPerm(addressBuff)){ //если это сообение для этого номера блокированно
+                           if(getPerm(addressBuff)){ //если это сообщение для этого номера блокированно
                               ESP_LOGE(TAG,"SMS for blocked address and content. Sending aborted.");
                               data=0x1B; // передаем ESC модулю - OТМЕНЯЕМ передачу
                               UART_RX_HOCK_WB(0x1A); // процу говорим, что приняли окончание передачи
@@ -2149,12 +2157,8 @@ void waMod(uint8_t* bu, uint8_t count){
                               sprintf(&(cmgs[7]),cmgsMask,outSMScounter);
                               UART_RX_HOCK_WA((uint8_t*)&cmgs[2],9); // +CMGS: XX
                               UART_RX_HOCK_WA((uint8_t*)_ok,8); //"\r\n\r\nOK\r\n"
-                           } else if(_outAddr!=nullptr && _outCont!=nullptr){ // если есть сенсоры отправки 
-                              if(strcmp(_outCont->state.c_str(),generalWorkBuff)!=0){ // публикуем исходящие
-                                  _outAddr->publish_state(addressBuff);
-                                  _outCont->publish_state(generalWorkBuff);
-                              }
-                           }
+                           } 
+                           pubOutSMS(addressBuff, generalWorkBuff);
                         } else {
                            ESP_LOGE(TAG,"Outbound SMS DECODE ERROR");
                         }
@@ -2263,14 +2267,10 @@ void waMod(uint8_t* bu, uint8_t count){
                                inSMSBreak(); // конец сеанса обработки смс
                                _hook=false; // отключаем перехват
                             } else if (permit){ // запрещенное сообщение
+                               pubOutSMS(addressBuff, generalWorkBuff);
                                ESP_LOGE(TAG, "SMS blocked content and number, hash: expected 0x%02X, received 0x%02X", toProcHash, fromProcHash);
                             } else { // из-за отсутствия связи делаем вид, что сообщение ушло, публикуем его в вебе, но продолжаем ждать нашего сообщения
-                               if(_outAddr!=nullptr && _outCont!=nullptr){ // для возможности передать другими каналами связи
-                                  if(strcmp(_outCont->state.c_str(),generalWorkBuff)!=0){ 
-                                     _outAddr->publish_state(addressBuff);
-                                     _outCont->publish_state(generalWorkBuff);
-                                  }
-                               }
+                               pubOutSMS(addressBuff, generalWorkBuff);
                                if((globalState & GL_ALARM) != 0) { // сообщения с признаком ALARM поставить в очередь на отправку
                                   ESP_LOGE(TAG, "SMS ALARM state put in outbound queue"); 
                                   putNewSMS(generalWorkBuff, addressBuff);
@@ -2369,7 +2369,7 @@ void waMod(uint8_t* bu, uint8_t count){
                        onoffTtime(interBuff, &arrow, cntr[i].control.w->state, inter_buff_size);
                        cntr[i].workstate=ssWaiteSet; //признак, что сообщение отправлено и ждем реакции на него 
                        break;
-                    }
+                    } 
                     if((count++ < inter_buff_cnt) && (onoffAdd(interBuff, &arrow, i, cntr[i].control.w->state, inter_buff_size))){ // добавляем к управляющему сообщению команду
                        cntr[i].workstate=ssWaiteSet; //признак, что сообщение отправлено и ждем реакции на него 
                     } else {
